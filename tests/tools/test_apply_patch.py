@@ -395,3 +395,63 @@ class TestApplyPatchTool:
 
         assert result.success is True, result.content
         assert target.read_text(encoding="utf-8") == "created\n"
+
+
+class TestApplyPatchAllowedDirs:
+    """apply_patch must honour ``[security] allowed_dirs`` like file_write."""
+
+    @staticmethod
+    def _create_patch(target: str) -> str:
+        return f"--- /dev/null\n+++ {target}\n@@ -0,0 +1 @@\n+hello\n"
+
+    def test_blocks_new_file_outside_allowed_dirs(self, tmp_path):
+        allowed = tmp_path / "allowed"
+        allowed.mkdir()
+        outside = tmp_path / "outside" / "new.txt"
+        tool = ApplyPatchTool(allowed_dirs=[str(allowed)])
+        result = tool.execute(patch=self._create_patch(str(outside)))
+        assert result.success is False
+        assert "outside allowed directories" in result.content
+        assert not outside.exists()
+        assert not outside.parent.exists()
+
+    def test_blocks_existing_file_outside_allowed_dirs(self, tmp_path):
+        allowed = tmp_path / "allowed"
+        allowed.mkdir()
+        target = tmp_path / "victim.txt"
+        target.write_text("a\n", encoding="utf-8")
+        patch = f"--- {target}\n+++ {target}\n@@ -1 +1 @@\n-a\n+b\n"
+        tool = ApplyPatchTool(allowed_dirs=[str(allowed)])
+        result = tool.execute(patch=patch, path=str(target))
+        assert result.success is False
+        assert target.read_text(encoding="utf-8") == "a\n"
+
+    def test_blocks_traversal_out_of_allowed_dir(self, tmp_path):
+        allowed = tmp_path / "allowed"
+        allowed.mkdir()
+        tool = ApplyPatchTool(allowed_dirs=[str(allowed)])
+        escape = str(allowed / ".." / "escaped.txt")
+        result = tool.execute(patch=self._create_patch(escape))
+        assert result.success is False
+        assert not (tmp_path / "escaped.txt").exists()
+
+    def test_permits_inside_allowed_dirs(self, tmp_path):
+        tool = ApplyPatchTool(allowed_dirs=[str(tmp_path)])
+        target = tmp_path / "sub" / "ok.txt"
+        result = tool.execute(patch=self._create_patch(str(target)))
+        assert result.success is True
+        assert target.read_text(encoding="utf-8") == "hello\n"
+
+    def test_relative_path_resolves_inside_first_allowed_dir(self, tmp_path):
+        tool = ApplyPatchTool(allowed_dirs=[str(tmp_path)])
+        result = tool.execute(patch=self._create_patch("rel.txt"))
+        assert result.success is True
+        assert (tmp_path / "rel.txt").read_text(encoding="utf-8") == "hello\n"
+
+    def test_file_tool_kwargs_binds_apply_patch(self, tmp_path):
+        from types import SimpleNamespace
+
+        from openjarvis.tools._paths import file_tool_kwargs
+
+        cfg = SimpleNamespace(security=SimpleNamespace(allowed_dirs=[str(tmp_path)]))
+        assert file_tool_kwargs("apply_patch", cfg) == {"allowed_dirs": [str(tmp_path)]}
